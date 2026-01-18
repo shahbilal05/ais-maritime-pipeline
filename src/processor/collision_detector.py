@@ -88,7 +88,7 @@ def alert_collision_risk(vessel_a, vessel_b, cpa_distance, time_to_cpa):
     
     try:
         requests.post(SLACK_WEBHOOK_URL, json=message, timeout=5)
-        logger.warning(f" ALERT: {vessel_a['ship_name']} and {vessel_b['ship_name']} - {cpa_distance:.2f} NM in {time_to_cpa:.1f} min")
+        logger.warning(f" ALERT: {vessel_a['ship_name']} and {vessel_b['ship_name']} - {cpa_distance:.2f} NM in {time_to_cpa:.1f} mins")
     except Exception as e:
         logger.error(f"Slack error: {e}")
 
