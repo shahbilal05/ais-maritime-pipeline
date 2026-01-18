@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 from kafka import KafkaConsumer
 import redis
 import requests
-from utils import haversine_distance, calculate_cpa, is_collision_risk
+from utils import haversine_distance, calculate_cpa, is_collision_risk, calculate_severity_score
 
 load_dotenv()
 
@@ -19,12 +19,11 @@ REDIS_HOST = "localhost"
 REDIS_PORT = 6379
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")  
 
-# store recent vessel data
 redis_client = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
 
 def process_vessel(vessel_data):
     mmsi = vessel_data['mmsi']
-    redis_client.setex(f"vessel:{mmsi}", 300, json.dumps(vessel_data)) # store key-val pair & deletes in 5 mins
+    redis_client.setex(f"vessel:{mmsi}", 300, json.dumps(vessel_data)) # Store key-val pair & delete in 5 mins
     
     nearby_vessels = get_nearby_vessels(vessel_data)
     
@@ -37,25 +36,40 @@ def process_vessel(vessel_data):
         if is_collision_risk(cpa_distance, time_to_cpa, vessel_data, other_vessel):
             alert_collision_risk(vessel_data, other_vessel, cpa_distance, time_to_cpa)
 
-# check which nearby vessels are within 10 nm for collision risk
-def get_nearby_vessels(vessel):
+# Get vessels within collision risk range using distance thresholds
+def get_nearby_vessels(vessel):   
     nearby = []
-    for key in redis_client.scan_iter("vessel:*", count=100): # iterate over vessel keys in Redis
+    
+    # Determine search radius based on vessel speed
+    vessel_speed = vessel.get('sog', 0)
+    
+    if vessel_speed > 15:  # Fast vessel (>15 knots)
+        max_search_radius = 5.0  # 5 NM
+    elif vessel_speed > 5:  
+        max_search_radius = 3.0  
+    else:  
+        max_search_radius = 2.0  # 2 NM (COLREGS minimum)
+    
+    for key in redis_client.scan_iter("vessel:*", count=100):
         try:
             other_vessel_json = redis_client.get(key)
             if not other_vessel_json:
                 continue
             
             other_vessel = json.loads(other_vessel_json)
+            
             distance = haversine_distance(
                 vessel['lat'], vessel['lon'],
                 other_vessel['lat'], other_vessel['lon']
             )
             
-            if distance < 10:
+            # Only include vessels within search radius
+            if distance < max_search_radius:
                 nearby.append(other_vessel)
+        
         except Exception as e:
             logger.error(f"Error: {e}")
+    
     return nearby
 
 def alert_collision_risk(vessel_a, vessel_b, cpa_distance, time_to_cpa):
@@ -65,22 +79,70 @@ def alert_collision_risk(vessel_a, vessel_b, cpa_distance, time_to_cpa):
         return
     
     redis_client.setex(f"alert:{pair_key}", 3600, "1")
-    
-    # Slack message
+
+    severity = calculate_severity_score(vessel_a, vessel_b)
+
+    # Stage 4: Immediate Danger
+    if cpa_distance < 0.25 * severity and time_to_cpa < 6:
+        risk_level = "IMMEDIATE DANGER"
+        stage = "Stage 4"
+        color_code = "#FF0000" 
+
+    # Stage 3: Close-Quarters 
+    elif cpa_distance < 0.5 * severity and time_to_cpa < 12:
+        risk_level = "CLOSE QUARTERS"
+        stage = "Stage 3"
+        color_code = "#FFD700"  
+
+    # Stage 2: Risk of Collision 
+    elif cpa_distance < 1.0 * severity and time_to_cpa < 20:
+        risk_level = "RISK OF COLLISION"
+        stage = "Stage 2"
+        color_code = "#0000FF"
+
+    # Stage 1: No Risk 
+    else:
+        return  
+
+    vessel_types = {
+        70: "Cargo", 80: "Tanker", 60: "Passenger",
+        30: "Fishing", 36: "Sailing", 37: "Pleasure Craft",
+        50: "Pilot", 52: "Tug"
+    }
+    type_a = vessel_types.get(vessel_a.get('ship_type', 0), "Unknown")
+    type_b = vessel_types.get(vessel_b.get('ship_type', 0), "Unknown")
+
+
     message = {
-        "text": f"*COLLISION RISK DETECTED*",
+        "text": f"*{risk_level}*",
         "blocks": [
             {
                 "type": "header",
-                "text": {"type": "plain_text", "text": "Maritime Collision Alert!"}
+                "text": {"type": "plain_text", "text": f"{risk_level} - Maritime Collision Alert"}
+            },
+            {
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"*COLREGS {stage}*  Severity Score: {severity:.2f}x"
+                }
             },
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Vessel A:*\n{vessel_a['ship_name']} (MMSI: {vessel_a['mmsi']})"},
-                    {"type": "mrkdwn", "text": f"*Vessel B:*\n{vessel_b['ship_name']} (MMSI: {vessel_b['mmsi']})"},
+                    {"type": "mrkdwn", "text": f"*Vessel A:*\n{vessel_a['ship_name']}\n{type_a} (MMSI: {vessel_a['mmsi']})"},
+                    {"type": "mrkdwn", "text": f"*Vessel B:*\n{vessel_b['ship_name']}\n{type_b} (MMSI: {vessel_b['mmsi']})"},
                     {"type": "mrkdwn", "text": f"*CPA Distance:*\n{cpa_distance:.2f} NM"},
                     {"type": "mrkdwn", "text": f"*Time to CPA:*\n{time_to_cpa:.1f} minutes"}
+                ]
+            },
+            {
+                "type": "context",
+                "elements": [
+                    {
+                        "type": "mrkdwn",
+                        "text": f"Based on IMO COLREGS 1972 Rule 7 & Rule 8"
+                    }
                 ]
             }
         ]
@@ -88,7 +150,7 @@ def alert_collision_risk(vessel_a, vessel_b, cpa_distance, time_to_cpa):
     
     try:
         requests.post(SLACK_WEBHOOK_URL, json=message, timeout=5)
-        logger.warning(f" ALERT: {vessel_a['ship_name']} and {vessel_b['ship_name']} - {cpa_distance:.2f} NM in {time_to_cpa:.1f} mins")
+        logger.warning(f"{risk_level} ({stage}): {vessel_a['ship_name']} ({type_a}) and {vessel_b['ship_name']} ({type_b}) - {cpa_distance:.2f} NM in {time_to_cpa:.1f} mins")
     except Exception as e:
         logger.error(f"Slack error: {e}")
 
@@ -101,7 +163,7 @@ def main():
         auto_offset_reset='latest'
     )
     
-    logger.info("Collision detector started")
+    logger.info("Collision detector started...")
     message_count = 0
     
     for message in consumer:
@@ -112,7 +174,7 @@ def main():
             
             if message_count % 100 == 0:
                 vessel_count = redis_client.dbsize()
-                logger.info(f"Processed {message_count} updates | {vessel_count} vessels tracked")
+                logger.info(f"Processed {message_count} updates ; {vessel_count} vessels tracked")
         except Exception as e:
             logger.error(f"Error: {e}")
 
