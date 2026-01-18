@@ -8,15 +8,17 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# configure logging (time - severity - message)
+# Configure logging (Time - Severity - Message)
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 AISSTREAM_API_KEY = os.getenv("AISSTREAM_API_KEY") 
 KAFKA_BROKER = "localhost:9092"
 KAFKA_TOPIC = "ais-positions"
-BOUNDING_BOXES = [[[25, -100], [50, -60]]] # required geographical boundaries
-
+BOUNDING_BOXES = [
+    [[25, -100], [50, -60]],    # Gulf of Mexico and East Coast
+    [[30, -130], [50, -115]]    # West Coast 
+]
 producer = KafkaProducer(
     bootstrap_servers=KAFKA_BROKER,
     value_serializer=lambda v: json.dumps(v).encode('utf-8'),
@@ -43,7 +45,7 @@ async def stream_ais():
                     try:
                         message = json.loads(message_json)
                         
-                        # only process messages with vessel positions
+                        # Only process messages with vessel positions
                         if message.get("MessageType") == "PositionReport":
                             pos = message["Message"]["PositionReport"]
                             meta = message.get("MetaData", {})
@@ -54,10 +56,10 @@ async def stream_ais():
                                 "timestamp": pos["Timestamp"],
                                 "lat": pos["Latitude"],
                                 "lon": pos["Longitude"],
-                                "sog": pos.get("Sog", 0), # speed over ground in knots; actual speed relative to Earth
-                                "cog": pos.get("Cog", 0), # course over ground in degrees from true north; actual travel direction
-                                "heading": pos.get("TrueHeading", 0), # direction the vessel is pointing
-                                "nav_status": pos.get("NavigationalStatus", 15), # vessel's current state (0=under way, 15=default/Unknown)
+                                "sog": pos.get("Sog", 0), # Speed over ground in knots; Actual speed relative to Earth
+                                "cog": pos.get("Cog", 0), # Course over ground in degrees from true north; actual travel direction
+                                "heading": pos.get("TrueHeading", 0), # Direction the vessel is pointing
+                                "nav_status": pos.get("NavigationalStatus", 15), # Vessel's current state (0=Under way, 15=Default/Unknown)
                                 "ship_type": meta.get("ShipType", 0),
                                 "ship_name": meta.get("ShipName", "UNKNOWN")
                             }
