@@ -104,15 +104,6 @@ def alert_collision_risk(vessel_a, vessel_b, cpa_distance, time_to_cpa):
     else:
         return  
 
-    vessel_types = {
-        70: "Cargo", 80: "Tanker", 60: "Passenger",
-        30: "Fishing", 36: "Sailing", 37: "Pleasure Craft",
-        50: "Pilot", 52: "Tug"
-    }
-    type_a = vessel_types.get(vessel_a.get('ship_type', 0), "Unknown")
-    type_b = vessel_types.get(vessel_b.get('ship_type', 0), "Unknown")
-
-
     message = {
         "text": f"*{risk_level}*",
         "blocks": [
@@ -124,27 +115,18 @@ def alert_collision_risk(vessel_a, vessel_b, cpa_distance, time_to_cpa):
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": f"*COLREGS {stage}*  Severity Score: {severity:.2f}x"
+                    "text": f"*COLREGS {stage}*"
                 }
             },
             {
                 "type": "section",
                 "fields": [
-                    {"type": "mrkdwn", "text": f"*Vessel A:*\n{vessel_a['ship_name']}\n{type_a} (MMSI: {vessel_a['mmsi']})"},
-                    {"type": "mrkdwn", "text": f"*Vessel B:*\n{vessel_b['ship_name']}\n{type_b} (MMSI: {vessel_b['mmsi']})"},
+                    {"type": "mrkdwn", "text": f"*Vessel A:*\n{vessel_a['ship_name']}\n (MMSI: {vessel_a['mmsi']})"},
+                    {"type": "mrkdwn", "text": f"*Vessel B:*\n{vessel_b['ship_name']}\n (MMSI: {vessel_b['mmsi']})"},
                     {"type": "mrkdwn", "text": f"*CPA Distance:*\n{cpa_distance:.2f} NM"},
                     {"type": "mrkdwn", "text": f"*Time to CPA:*\n{time_to_cpa:.1f} minutes"}
                 ]
             },
-            {
-                "type": "context",
-                "elements": [
-                    {
-                        "type": "mrkdwn",
-                        "text": f"Based on IMO COLREGS 1972 Rule 7 & Rule 8"
-                    }
-                ]
-            }
         ]
     }
     
